@@ -111,15 +111,10 @@ jobs:
         name: "DouyinTV v${{ steps.version.outputs.version_name }}"
         body: |
           ## DouyinTV v${{ steps.version.outputs.version_name }}
-          
+
           ### 更新内容
-          - 修复验证码滑动问题，支持鼠标事件模拟
-          - 修复小米电视等设备闪退问题，增强异常处理
-          - 修复菜单键无法使用的问题，扩展按键支持
-          - 支持横屏/竖屏自动旋转
-          - 优化全屏显示体验
-          - 优化WebView配置和内存管理
-          
+          详见仓库根目录 [更新日志.txt](../../blob/master/更新日志.txt)
+
           ### 安装说明
           1. 下载APK文件
           2. 通过U盘安装到电视
