@@ -6,6 +6,7 @@ import android.content.SharedPreferences
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.util.Log
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -267,7 +268,11 @@ class MainActivity : AppCompatActivity() {
         override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
             if (WebViewOptimizer.getDeviceLevel(this@MainActivity) == WebViewOptimizer.DeviceLevel.LOW) {
                 val url = request?.url?.toString() ?: return null
-                if (url.contains("ad") || url.contains("analytics") || url.contains("tracking")) {
+                // 精确匹配广告/追踪域名特征,避免误杀含"load"、"header"等字样的正常资源
+                val blocked = url.contains("/ads/") || url.contains("/ad/") ||
+                        url.contains("analytics") || url.contains("tracking") ||
+                        url.contains("doubleclick") || url.contains("adview")
+                if (blocked) {
                     return WebResourceResponse("text/plain", "utf-8", null)
                 }
             }
@@ -310,7 +315,6 @@ class MainActivity : AppCompatActivity() {
                 cookieManager.flush()
                 injectAntiDetectionScript()
                 injectAutoPlayScript()
-                injectCaptchaSupport()
                 injectLoginDetectionScript()
                 injectTVOptimizationCSS()
                 checkLoginStatus()
@@ -405,72 +409,6 @@ class MainActivity : AppCompatActivity() {
                 try { Object.defineProperty(navigator, 'platform', { get: () => 'Win32' }); } catch(e) {}
                 try { window.chrome = { runtime: {}, loadTimes: function() {}, csi: function() {}, app: {} }; } catch(e) {}
                 try { Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 0 }); } catch(e) {}
-            })();
-        """.trimIndent()
-        webView.evaluateJavascript(script, null)
-    }
-
-    private fun injectCaptchaSupport() {
-        val script = """
-            (function() {
-                function createTouch(target, x, y) {
-                    try {
-                        return new Touch({
-                            identifier: 0,
-                            target: target,
-                            clientX: x,
-                            clientY: y,
-                            pageX: x,
-                            pageY: y,
-                            screenX: x,
-                            screenY: y
-                        });
-                    } catch(e) { return null; }
-                }
-                function dispatchTouch(target, type, x, y) {
-                    try {
-                        var touch = createTouch(target, x, y);
-                        if (!touch) return;
-                        var ev = new TouchEvent(type, {
-                            touches: type === 'touchend' ? [] : [touch],
-                            targetTouches: type === 'touchend' ? [] : [touch],
-                            changedTouches: [touch],
-                            bubbles: true,
-                            cancelable: true
-                        });
-                        target.dispatchEvent(ev);
-                    } catch(e) {}
-                }
-                function findSliderButton() {
-                    return document.querySelector('.secsdk_captcha_drag_button') ||
-                           document.querySelector('.captcha_verify_slide--button') ||
-                           document.querySelector('[class*="captcha"][class*="drag-button"]') ||
-                           document.querySelector('[class*="drag-button"]') ||
-                           document.querySelector('[class*="captcha"][class*="drag"]');
-                }
-                function enableCaptchaSlider() {
-                    const sliderBtn = findSliderButton();
-                    if (sliderBtn && !sliderBtn.hasAttribute('data-captcha-enabled')) {
-                        sliderBtn.setAttribute('data-captcha-enabled', 'true');
-                        sliderBtn.style.cursor = 'grab';
-                        let isDragging = false;
-                        sliderBtn.addEventListener('mousedown', function(e) {
-                            isDragging = true;
-                            dispatchTouch(sliderBtn, 'touchstart', e.clientX, e.clientY);
-                        });
-                        document.addEventListener('mousemove', function(e) {
-                            if (isDragging) dispatchTouch(sliderBtn, 'touchmove', e.clientX, e.clientY);
-                        });
-                        document.addEventListener('mouseup', function() {
-                            if (isDragging) {
-                                isDragging = false;
-                                dispatchTouch(sliderBtn, 'touchend', 0, 0);
-                            }
-                        });
-                    }
-                }
-                setInterval(enableCaptchaSlider, 1000);
-                enableCaptchaSlider();
             })();
         """.trimIndent()
         webView.evaluateJavascript(script, null)
@@ -1540,41 +1478,20 @@ class MainActivity : AppCompatActivity() {
     private fun handleMenuKey() {
         val script = """
             (function() {
-                function fireMouse(type, target, x, y) {
-                    try {
-                        target.dispatchEvent(new MouseEvent(type, {
-                            clientX: x, clientY: y, bubbles: true, cancelable: true, view: window
-                        }));
-                    } catch(e) {}
+                function findSlider() {
+                    return document.querySelector('.secsdk_captcha_drag_button') ||
+                           document.querySelector('.captcha_verify_slide--button') ||
+                           document.querySelector('[class*="captcha"][class*="drag-button"]') ||
+                           document.querySelector('[class*="drag-button"]') ||
+                           document.querySelector('[class*="captcha"][class*="drag"]');
                 }
-                function dragSlider(slider) {
-                    const rect = slider.getBoundingClientRect();
-                    const startX = rect.left + rect.width / 2;
-                    const startY = rect.top + rect.height / 2;
-                    let endX = Math.max(rect.right + window.innerWidth * 0.6, startX + 150);
-                    endX = Math.min(endX, window.innerWidth - 30);
-                    fireMouse('mousedown', slider, startX, startY);
-                    const steps = 24;
-                    let i = 0;
-                    const timer = setInterval(function() {
-                        i++;
-                        const x = startX + (endX - startX) * (i / steps);
-                        const y = startY + (Math.random() * 4 - 2);
-                        fireMouse('mousemove', document, x, y);
-                        if (i >= steps) {
-                            clearInterval(timer);
-                            fireMouse('mouseup', document, endX, startY);
-                        }
-                    }, 25);
-                    return true;
+                const slider = findSlider();
+                if (slider) {
+                    const r = slider.getBoundingClientRect();
+                    if (r.width > 0 && r.height > 0) {
+                        return 'slider_rect:' + (r.left + r.width / 2) + ':' + (r.top + r.height / 2);
+                    }
                 }
-                const slider = document.querySelector('.secsdk_captcha_drag_button') ||
-                               document.querySelector('.captcha_verify_slide--button') ||
-                               document.querySelector('[class*="captcha"][class*="drag-button"]') ||
-                               document.querySelector('[class*="drag-button"]') ||
-                               document.querySelector('[class*="captcha"][class*="drag"]') ||
-                               document.querySelector('[class*="slider"]');
-                if (slider) { dragSlider(slider); return 'auto_slide_captcha'; }
                 const loginBtn = document.querySelector('[data-e2e="login"]') ||
                                  document.querySelector('button[type="submit"]') ||
                                  document.querySelector('[class*="login"]') ||
@@ -1584,15 +1501,74 @@ class MainActivity : AppCompatActivity() {
             })();
         """.trimIndent()
         webView.evaluateJavascript(script) { result ->
-            Log.d(tag, "Menu key action: $result")
+            val raw = result?.trim()?.removeSurrounding("\"") ?: ""
+            Log.d(tag, "Menu key action: $raw")
             runOnUiThread {
-                when (result?.replace("\"", "")) {
-                    "clicked_login" -> Toast.makeText(this, "已点击登录按钮", Toast.LENGTH_SHORT).show()
-                    "auto_slide_captcha" -> Toast.makeText(this, "正在自动滑动验证码", Toast.LENGTH_SHORT).show()
-                    "no_slider" -> Toast.makeText(this, "未检测到滑块或登录按钮", Toast.LENGTH_SHORT).show()
+                when {
+                    raw.startsWith("slider_rect:") -> {
+                        val parts = raw.split(":")
+                        try {
+                            val x = parts[1].toFloat()
+                            val y = parts[2].toFloat()
+                            slideSliderNatively(x, y)
+                        } catch (e: Exception) {
+                            Log.e(tag, "slider rect parse error", e)
+                            Toast.makeText(this, "滑动失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                    raw == "clicked_login" -> Toast.makeText(this, "已点击登录按钮", Toast.LENGTH_SHORT).show()
+                    raw == "no_slider" -> Toast.makeText(this, "未检测到滑块或登录按钮", Toast.LENGTH_SHORT).show()
                     else -> {}
                 }
             }
+        }
+    }
+
+    /**
+     * 用Android原生MotionEvent注入真实触摸序列来滑动验证码。
+     * 系统级真实输入在DOM层表现为isTrusted=true,与真人操作无异,不会被风控识别。
+     */
+    private fun slideSliderNatively(cssX: Float, cssY: Float) {
+        try {
+            // CSS像素 -> View像素换算
+            val scale = webView.scale
+            val startX = cssX * scale
+            val startY = cssY * scale
+            if (startX < 0 || startX > webView.width || startY < 0 || startY > webView.height) {
+                Toast.makeText(this, "滑块不在可视区域", Toast.LENGTH_SHORT).show()
+                return
+            }
+            var endX = maxOf(startX + webView.width * 0.6f, startX + 150f)
+            endX = minOf(endX, webView.width - 40f)
+            if (endX <= startX + 60f) endX = startX + 60f
+            val downTime = SystemClock.uptimeMillis()
+            fun makeEvent(action: Int, x: Float, y: Float): MotionEvent =
+                MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), action, x, y, 0)
+            webView.dispatchTouchEvent(makeEvent(MotionEvent.ACTION_DOWN, startX, startY))
+            Toast.makeText(this, "正在自动滑动验证码", Toast.LENGTH_SHORT).show()
+            val steps = 30
+            var step = 1
+            val moveRunnable = object : Runnable {
+                override fun run() {
+                    try {
+                        val x = startX + (endX - startX) * (step.toFloat() / steps)
+                        val y = startY + if (step % 3 == 0) 2f else -1f
+                        webView.dispatchTouchEvent(makeEvent(MotionEvent.ACTION_MOVE, x, y))
+                        step++
+                        if (step <= steps) {
+                            webView.postDelayed(this, 20)
+                        } else {
+                            webView.dispatchTouchEvent(makeEvent(MotionEvent.ACTION_UP, endX, startY))
+                        }
+                    } catch (e: Exception) {
+                        Log.e(tag, "slide move error", e)
+                    }
+                }
+            }
+            webView.postDelayed(moveRunnable, 40)
+        } catch (e: Exception) {
+            Log.e(tag, "native slide error", e)
+            Toast.makeText(this, "滑动失败: ${e.message}", Toast.LENGTH_SHORT).show()
         }
     }
 
