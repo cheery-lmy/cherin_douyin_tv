@@ -42,7 +42,7 @@ class MainActivity : AppCompatActivity() {
 
     // 按键控制
     private var lastKeyEventTime = 0L
-    private val KEY_DEBOUNCE_MS = 120L
+    private val KEY_REPEAT_INTERVAL_MS = 180L
 
     // 视频控制
     private var isVideoPlaying = false
@@ -319,7 +319,7 @@ class MainActivity : AppCompatActivity() {
                 injectTVOptimizationCSS()
                 checkLoginStatus()
                 lifecycleScope.launch {
-                    delay(3000); initFocusEngine()
+                    delay(1500); initFocusEngine()
                 }
             } catch (e: Exception) {
                 Log.e(tag, "onPageFinished error", e)
@@ -572,7 +572,7 @@ class MainActivity : AppCompatActivity() {
         if (!isRemoteNavigationKey(keyCode)) return false
         if (event.action == KeyEvent.ACTION_UP) return true
         if (event.action != KeyEvent.ACTION_DOWN) return false
-        return handleRemoteKeyDown(keyCode)
+        return handleRemoteKeyDown(keyCode, event.repeatCount)
     }
 
     private fun isRemoteNavigationKey(keyCode: Int): Boolean {
@@ -593,9 +593,10 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun handleRemoteKeyDown(keyCode: Int): Boolean {
+    private fun handleRemoteKeyDown(keyCode: Int, repeatCount: Int): Boolean {
         val currentTime = System.currentTimeMillis()
-        if (currentTime - lastKeyEventTime < KEY_DEBOUNCE_MS) return true
+        // 单击立即响应(修复吞按键);长按重复按固定间隔节流,避免一次滚动多格
+        if (repeatCount > 0 && currentTime - lastKeyEventTime < KEY_REPEAT_INTERVAL_MS) return true
         lastKeyEventTime = currentTime
 
         return when (keyCode) {
@@ -618,10 +619,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        val currentTime = System.currentTimeMillis()
-        if (currentTime - lastKeyEventTime < KEY_DEBOUNCE_MS) return true
-        lastKeyEventTime = currentTime
-
         when (keyCode) {
             KeyEvent.KEYCODE_DPAD_UP -> { focusEngineNavigate(0, -1); return true }
             KeyEvent.KEYCODE_DPAD_DOWN -> { focusEngineNavigate(0, 1); return true }
@@ -1324,9 +1321,18 @@ class MainActivity : AppCompatActivity() {
     private fun focusEngineNavigate(dx: Int, dy: Int) {
         val script = """
             (function() {
+                function hasModal() {
+                    var nodes = document.querySelectorAll('[class*="captcha"], [id*="captcha"], [class*="login-panel"], [class*="loginPanel"], [class*="side-dialog"], [class*="login-guide"], [data-e2e="login-dialog"]');
+                    for (var i = 0; i < nodes.length; i++) {
+                        var r = nodes[i].getBoundingClientRect();
+                        if (r.width > 100 && r.height > 100 && r.bottom > 0 && r.top < window.innerHeight) return true;
+                    }
+                    return false;
+                }
+                var hasModalOpen = hasModal();
                 var fullscreenVideo = document.querySelector('video.tv-pseudo-fullscreen-video');
                 if (fullscreenVideo) {
-                    if ($dx !== 0) {
+                    if ($dx !== 0 && !hasModalOpen) {
                         try {
                             fullscreenVideo.currentTime = Math.max(0, Math.min((fullscreenVideo.duration || fullscreenVideo.currentTime + 15), fullscreenVideo.currentTime + ($dx > 0 ? 10 : -10)));
                             return 'fullscreen-seek';
@@ -1353,7 +1359,7 @@ class MainActivity : AppCompatActivity() {
                     return best;
                 }
                 var href = location.href;
-                var inVideoPage = href.indexOf('/video/') > -1 || href.indexOf('/note/') > -1 || document.querySelectorAll('video').length === 1;
+                var inVideoPage = !hasModalOpen && (href.indexOf('/video/') > -1 || href.indexOf('/note/') > -1 || document.querySelectorAll('video').length === 1);
                 if (inVideoPage) {
                     var v = primaryVideo();
                     if (v && $dx !== 0) {
@@ -1364,7 +1370,7 @@ class MainActivity : AppCompatActivity() {
                     }
                     if ($dy !== 0) {
                         window.dispatchEvent(new WheelEvent('wheel', { deltaY: $dy > 0 ? window.innerHeight : -window.innerHeight, bubbles:true, cancelable:true }));
-                        window.scrollBy({ top: ($dy > 0 ? 1 : -1) * window.innerHeight * 0.9, behavior: 'smooth' });
+                        window.scrollBy({ top: ($dy > 0 ? 1 : -1) * window.innerHeight * 0.9, behavior: 'auto' });
                         return 'switch-video';
                     }
                 }
@@ -1382,6 +1388,14 @@ class MainActivity : AppCompatActivity() {
     private fun focusEngineAction() {
         val script = """
             (function() {
+                function hasModal() {
+                    var nodes = document.querySelectorAll('[class*="captcha"], [id*="captcha"], [class*="login-panel"], [class*="loginPanel"], [class*="side-dialog"], [class*="login-guide"], [data-e2e="login-dialog"]');
+                    for (var i = 0; i < nodes.length; i++) {
+                        var r = nodes[i].getBoundingClientRect();
+                        if (r.width > 100 && r.height > 100 && r.bottom > 0 && r.top < window.innerHeight) return true;
+                    }
+                    return false;
+                }
                 var fullscreenVideo = document.querySelector('video.tv-pseudo-fullscreen-video');
                 if (fullscreenVideo) {
                     try {
@@ -1402,7 +1416,7 @@ class MainActivity : AppCompatActivity() {
                     return best;
                 }
                 var href = window.location.href;
-                if (href.indexOf('/video/') > -1 || href.indexOf('/note/') > -1) {
+                if ((href.indexOf('/video/') > -1 || href.indexOf('/note/') > -1) && !hasModal()) {
                     var v = primaryVideo();
                     if (v) {
                         try {
