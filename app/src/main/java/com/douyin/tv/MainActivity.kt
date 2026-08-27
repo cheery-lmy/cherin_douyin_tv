@@ -53,9 +53,6 @@ class MainActivity : AppCompatActivity() {
     private var pageLoadAttempts = 0
     private val MAX_LOAD_ATTEMPTS = 3
 
-    // 验证码滑动
-    private var captchaDragging = false
-
     // 登录状态监控
     private var loginCheckJob: Job? = null
 
@@ -227,7 +224,6 @@ class MainActivity : AppCompatActivity() {
             webView.webViewClient = DouyinWebViewClient()
             webView.webChromeClient = DouyinWebChromeClient()
             webView.addJavascriptInterface(VideoJsInterface(), "AndroidInterface")
-            setupTouchHandler()
             setupMemoryMonitor()
         } catch (e: Exception) {
             Log.e(tag, "setupWebView error", e)
@@ -253,32 +249,6 @@ class MainActivity : AppCompatActivity() {
                 try { webView.clearCache(false) } catch (e: Exception) { Log.e(tag, "clearCache error", e) }
             }
         }
-    }
-
-    private fun setupTouchHandler() {
-        webView.setOnTouchListener { _, event ->
-            try { handleTouchEvent(event) } catch (e: Exception) { Log.e(tag, "Touch event error", e) }
-            false
-        }
-    }
-
-    private fun handleTouchEvent(event: MotionEvent): Boolean {
-        when (event.action) {
-            MotionEvent.ACTION_DOWN -> { captchaDragging = true }
-            MotionEvent.ACTION_MOVE -> {
-                if (captchaDragging) {
-                    val moveEvent = MotionEvent.obtain(
-                        event.downTime, event.eventTime, MotionEvent.ACTION_MOVE,
-                        event.x, event.y, event.metaState
-                    )
-                    webView.dispatchTouchEvent(moveEvent)
-                    moveEvent.recycle()
-                    return true
-                }
-            }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { captchaDragging = false }
-        }
-        return false
     }
 
     private fun setupCookieManager() {
@@ -471,9 +441,15 @@ class MainActivity : AppCompatActivity() {
                         target.dispatchEvent(ev);
                     } catch(e) {}
                 }
+                function findSliderButton() {
+                    return document.querySelector('.secsdk_captcha_drag_button') ||
+                           document.querySelector('.captcha_verify_slide--button') ||
+                           document.querySelector('[class*="captcha"][class*="drag-button"]') ||
+                           document.querySelector('[class*="drag-button"]') ||
+                           document.querySelector('[class*="captcha"][class*="drag"]');
+                }
                 function enableCaptchaSlider() {
-                    const sliderBtn = document.querySelector('.secsdk_captcha_drag_button') ||
-                                     document.querySelector('[class*="drag-button"]');
+                    const sliderBtn = findSliderButton();
                     if (sliderBtn && !sliderBtn.hasAttribute('data-captcha-enabled')) {
                         sliderBtn.setAttribute('data-captcha-enabled', 'true');
                         sliderBtn.style.cursor = 'grab';
@@ -1564,29 +1540,47 @@ class MainActivity : AppCompatActivity() {
     private fun handleMenuKey() {
         val script = """
             (function() {
-                const loginBtn = document.querySelector('[class*="login"]') ||
-                                document.querySelector('[class*="Login"]') ||
-                                document.querySelector('button[type="submit"]') ||
-                                document.querySelector('[data-e2e="login"]');
-                if (loginBtn) { loginBtn.click(); return 'clicked_login'; }
-                const slider = document.querySelector('.secsdk_captcha_drag_button') ||
-                              document.querySelector('[class*="drag-button"]') ||
-                              document.querySelector('[class*="slider"]');
-                if (slider) {
+                function fireMouse(type, target, x, y) {
+                    try {
+                        target.dispatchEvent(new MouseEvent(type, {
+                            clientX: x, clientY: y, bubbles: true, cancelable: true, view: window
+                        }));
+                    } catch(e) {}
+                }
+                function dragSlider(slider) {
                     const rect = slider.getBoundingClientRect();
                     const startX = rect.left + rect.width / 2;
                     const startY = rect.top + rect.height / 2;
-                    const endX = window.innerWidth - 100;
-                    slider.dispatchEvent(new MouseEvent('mousedown', { clientX: startX, clientY: startY, bubbles: true }));
-                    setTimeout(function() {
-                        document.dispatchEvent(new MouseEvent('mousemove', { clientX: endX, clientY: startY, bubbles: true }));
-                    }, 200);
-                    setTimeout(function() {
-                        document.dispatchEvent(new MouseEvent('mouseup', { clientX: endX, clientY: startY, bubbles: true }));
-                    }, 500);
-                    return 'auto_slide_captcha';
+                    let endX = Math.max(rect.right + window.innerWidth * 0.6, startX + 150);
+                    endX = Math.min(endX, window.innerWidth - 30);
+                    fireMouse('mousedown', slider, startX, startY);
+                    const steps = 24;
+                    let i = 0;
+                    const timer = setInterval(function() {
+                        i++;
+                        const x = startX + (endX - startX) * (i / steps);
+                        const y = startY + (Math.random() * 4 - 2);
+                        fireMouse('mousemove', document, x, y);
+                        if (i >= steps) {
+                            clearInterval(timer);
+                            fireMouse('mouseup', document, endX, startY);
+                        }
+                    }, 25);
+                    return true;
                 }
-                return 'no_action';
+                const slider = document.querySelector('.secsdk_captcha_drag_button') ||
+                               document.querySelector('.captcha_verify_slide--button') ||
+                               document.querySelector('[class*="captcha"][class*="drag-button"]') ||
+                               document.querySelector('[class*="drag-button"]') ||
+                               document.querySelector('[class*="captcha"][class*="drag"]') ||
+                               document.querySelector('[class*="slider"]');
+                if (slider) { dragSlider(slider); return 'auto_slide_captcha'; }
+                const loginBtn = document.querySelector('[data-e2e="login"]') ||
+                                 document.querySelector('button[type="submit"]') ||
+                                 document.querySelector('[class*="login"]') ||
+                                 document.querySelector('[class*="Login"]');
+                if (loginBtn) { loginBtn.click(); return 'clicked_login'; }
+                return 'no_slider';
             })();
         """.trimIndent()
         webView.evaluateJavascript(script) { result ->
@@ -1594,7 +1588,8 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 when (result?.replace("\"", "")) {
                     "clicked_login" -> Toast.makeText(this, "已点击登录按钮", Toast.LENGTH_SHORT).show()
-                    "auto_slide_captcha" -> Toast.makeText(this, "已自动滑动验证码", Toast.LENGTH_SHORT).show()
+                    "auto_slide_captcha" -> Toast.makeText(this, "正在自动滑动验证码", Toast.LENGTH_SHORT).show()
+                    "no_slider" -> Toast.makeText(this, "未检测到滑块或登录按钮", Toast.LENGTH_SHORT).show()
                     else -> {}
                 }
             }
